@@ -1,0 +1,411 @@
+#!/usr/bin/env bash
+#
+# This is the main snappy script.
+# It is a wrapper for creating LVM snapshots
+
+readonly CONFIG_ETC_FILE='/etc/snappy.conf'
+readonly CONFIG_HOME_FILE='.snappy.conf'
+VERBOSE=0
+DRY_RUN=0
+declare -A CONFIG
+
+
+########################################################################
+# Executes a function
+# Globals:
+#  VERBOSE
+#  DRY_RUN
+# Arguments:
+#  command: the command you wish to run
+# Returns:
+#   None
+########################################################################
+function print_exec () {
+  if [[ "${VERBOSE}" -eq 1 ]]; then
+    echo $1
+  fi
+}
+
+########################################################################
+# Creates a snapshot you can restore later
+# Globals:
+#  CONFIG
+#  VERBOSE
+# Arguments:
+#  None
+# Returns:
+#   None
+########################################################################
+function create () {
+  
+  ########################################################################
+  # Prints the size of a directory
+  # Globals:
+  #   None
+  # Arguments:
+  #   mount_point
+  #   key
+  # Returns:
+  #   size: Integer, size in KiB of the mountpoint
+  ########################################################################
+  function get_size () {
+    local value
+    value=$(/usr/bin/du -s $1 2>/dev/null | /usr/bin/sed -r 's/([0-9]+).*/\1/')
+    if [[ "${PIPESTATUS[0]}" -ne 0 || "${PIPESTATUS[1]}" -ne 0 ]]; then
+      err "/usr/bin/du or /usr/bin/sed was not found" 1
+    fi
+    echo $value
+  }
+  
+  # Get the size of the physical backup partition
+  
+  local static_part_size=0
+  
+  for dir in ${CONFIG["static"]}; do
+    local dir_size=$(get_size ${dir})
+    if [[ "${VERBOSE}" -eq 1 ]]; then
+      echo "Size of ${dir}: ${dir_size}kb"
+    fi
+    let "static_part_size += ${dir_size}"
+  done
+  # Give the static partition 50mb breathing room
+  let "static_part_size += 51200" 
+  
+  if [[ "${VERBOSE}" -eq 1 ]]; then
+    echo "Total size of physical backup partition is ${static_part_size}kb."
+    echo
+  fi
+  
+  # Create the LV snapshots
+  
+  for lv in ${CONFIG["lv"]}; do
+    local size
+    local name
+    size=$(echo "${lv}" | cut -d: -f2)
+    if [[ "${PIPESTATUS[0]}" -ne 0 || "${PIPESTATUS[1]}" -ne 0 ]]; then
+      err "/usr/bin/cut was not found" 1
+    fi
+    name=$(echo "${lv}" | cut -d: -f1)
+    if [[ "${PIPESTATUS[0]}" -ne 0 || "${PIPESTATUS[1]}" -ne 0 ]]; then
+      err "/usr/bin/cut was not found" 1
+    fi
+    
+    print_exec "/usr/sbin/lvcreate -L${size} -s -n bup-${name} /dev/${CONFIG["vg"]}/${name}"
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+      /usr/sbin/lvcreate -L"${size}" -s -n "bup-${name}" /dev/"${CONFIG["vg"]}"/"${name}"  >> /dev/null 2>&1 || err "/usr/sbin/lvcreate -L${size} -s -n bup-${name} /dev/${CONFIG["vg"]}/${name} has a non-zero exit." 10
+    fi
+    
+  done
+  
+  # Backup the physical partitions using rsync
+  
+  print_exec "/usr/bin/yes | /usr/sbin/lvcreate -Zy -L${static_part_size}k -n bup-physical ${CONFIG["vg"]}"
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    /usr/bin/yes | /usr/sbin/lvcreate -Zy -L"${static_part_size}"k -n bup-physical "${CONFIG["vg"]}" >> /dev/null 2>&1 || err "/usr/bin/yes | /usr/sbin/lvcreate -Zy -L${static_part_size}k -n bup-physical ${CONFIG["vg"]} has a non-zero exit." 10
+  fi
+  
+  print_exec "/usr/sbin/mkfs.ext4 /dev/${CONFIG["vg"]}/bup-physical"
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    /usr/sbin/mkfs.ext4 /dev/"${CONFIG["vg"]}"/bup-physical >> /dev/null 2>&1 || err "/usr/sbin/mkfs.ext4 /dev/${CONFIG["vg"]}/bup-physical has a non-zero exit." 10
+  fi
+  
+  print_exec "/usr/bin/mount /dev/${CONFIG["vg"]}/bup-physical /mnt"
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    /usr/bin/mount /dev/"${CONFIG["vg"]}"/bup-physical /mnt  >> /dev/null 2>&1  || err "/usr/bin/mount /dev/${CONFIG["vg"]}/bup-physical /mnt has a non-zero exit." 10
+  fi
+  
+  for dir in ${CONFIG["static"]}; do
+    local drname
+    drname=$(/usr/bin/basename ${dir}) || err '/usr/bin/basename not found' 1
+    
+    print_exec "/usr/bin/mkdir -p /mnt/${drname}"
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+      /usr/bin/mkdir -p /mnt/"${drname}" >> /dev/null 2>&1 || err "/usr/bin/mkdir -p /mnt/${drname} has a non-zero exit." 10
+    fi
+    
+    print_exec "/usr/bin/rsync -aHAX ${dir}/ /mnt/${drname}/"
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+      /usr/bin/rsync -aHAX "${dir}"/ /mnt/"${drname}"/ >> /dev/null 2>&1 || err "/usr/bin/rsync -aHAX ${dir}/ /mnt/${drname}/ has a non-zero exit." 10
+    fi
+    
+  done
+  
+  print_exec "/usr/bin/umount /mnt"
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    /usr/bin/umount /mnt >> /dev/null 2>&1 || err "/usr/bin/umount /mnt has a non-zero exit." 10
+  fi
+}
+
+########################################################################
+# Drops the snapshot freeing disk space
+# Globals:
+#  CONFIG
+# Arguments:
+#  None
+# Returns:
+#   None
+########################################################################
+function drop () {
+  for lv in ${CONFIG["lv"]}; do
+    local name
+    name=$(echo "${lv}" | cut -d: -f1)
+    if [[ "${PIPESTATUS[0]}" -ne 0 || "${PIPESTATUS[1]}" -ne 0 ]]; then
+      err "/usr/bin/cut was not found" 1
+    fi
+    
+    print_exec "/usr/bin/yes | /usr/sbin/lvremove ${CONFIG["vg"]}/bup-${name}"
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+      /usr/bin/yes | /usr/sbin/lvremove "${CONFIG["vg"]}"/"bup-${name}" >> /dev/null 2>&1 || err "/usr/bin/yes | /usr/sbin/lvremove ${CONFIG["vg"]}/bup-${name} has a non-zero exit." 10
+    fi
+    
+  done
+  
+  print_exec "/usr/bin/yes | /usr/sbin/lvremove ${CONFIG["vg"]}/bup-physical"
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    /usr/bin/yes | /usr/sbin/lvremove "${CONFIG["vg"]}"/bup-physical >> /dev/null 2>&1  || err "/usr/bin/yes | /usr/sbin/lvremove ${CONFIG["vg"]}/bup-physical has a non-zero exit." 10
+  fi
+}
+
+########################################################################
+# Restores the snapshot and freeing disk space
+# Globals:
+#  CONFIG
+# Arguments:
+#  None
+# Returns:
+#   None
+########################################################################
+function restore () {
+  print_exec "/usr/bin/mount /dev/${CONFIG["vg"]}/bup-physical /mnt"
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    /usr/bin/mount /dev/"${CONFIG["vg"]}"/bup-physical /mnt >> /dev/null 2>&1  || err "/usr/bin/mount /dev/${CONFIG["vg"]}/bup-physical /mnt has a non-zero exit." 10
+  fi
+  
+  for dir in ${CONFIG["static"]}; do
+    local drname
+    drname=$(/usr/bin/basename ${dir}) || err '/usr/bin/basename not found' 1
+    
+    print_exec "/usr/bin/rsync -aHAX /mnt/${drname}/ ${dir}/"
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+      /usr/bin/rsync -aHAX /mnt/"${drname}"/ "${dir}"/ >> /dev/null 2>&1  || err "/usr/bin/rsync -aHAX /mnt/${drname}/ ${dir}/ has a non-zero exit." 10
+    fi
+    
+  done
+  
+  print_exec "/usr/bin/umount /mnt"
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    /usr/bin/umount /mnt >> /dev/null 2>&1  || err "/usr/bin/umount /mnt has a non-zero exit." 10
+  fi
+  
+  for lv in ${CONFIG["lv"]}; do
+    local name
+    name=$(echo "${lv}" | cut -d: -f1)
+    if [[ "${PIPESTATUS[0]}" -ne 0 || "${PIPESTATUS[1]}" -ne 0 ]]; then
+      err "/usr/bin/cut was not found" 1
+    fi
+    
+    print_exec "/usr/sbin/lvconvert --merge /dev/${CONFIG["vg"]}/bup-${name}"
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+      /usr/sbin/lvconvert --merge /dev/"${CONFIG["vg"]}"/"bup-${name}" >> /dev/null 2>&1  || err "/usr/sbin/lvconvert --merge /dev/${CONFIG["vg"]}/bup-${name} has a non-zero exit." 10
+    fi
+    
+  done
+  
+  if [[ -n "${CONFIG["grub"]}" ]]; then
+    print_exec "/usr/sbin/grub2-mkconfig -o ${CONFIG["grub"]}"
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+       /usr/sbin/grub2-mkconfig -o "${CONFIG["grub"]}" >> /dev/null 2>&1  || err "/usr/sbin/grub2-mkconfig -o ${CONFIG["grub"]} has a non-zero exit." 10
+    fi
+  elif [[ "${VERBOSE}" -eq 1 ]]; then
+    echo "Skip recreating GRUB config"
+  fi
+  
+  print_exec "/usr/bin/yes | /usr/sbin/lvremove ${CONFIG["vg"]}/bup-physical"
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    /usr/bin/yes | /usr/sbin/lvremove "${CONFIG["vg"]}"/bup-physical >> /dev/null 2>&1  || err "/usr/bin/yes | /usr/sbin/lvremove ${CONFIG["vg"]}/bup-physical has a non-zero exit." 10
+  fi
+  
+  if [[ "${VERBOSE}" -eq 1 ]]; then
+    echo
+  fi
+  echo "Please reboot the system."
+}
+
+########################################################################
+# Print usage information of this script to the screen
+# Globals:
+#  None
+# Arguments:
+#  None
+# Returns:
+#   None
+########################################################################
+function usage () {
+    echo "snappy [OPTIONS] ACTION"
+    echo "ACTION must be 'create', 'drop' or 'restore'"
+    echo "OPTIONS"
+    echo "-v        Enable verbose output"
+    echo "-c FILE   Use config file at location FILE"
+    echo "-d        Dry-run, don't do anything"
+}
+
+########################################################################
+# Check if the action is valid or exit the script
+# Globals:
+#  None
+# Arguments:
+#  action
+# Returns:
+#   None
+########################################################################
+function validate_action () {
+  
+  local valid_actions="create drop restore"
+  
+  if [ -z "$1" ]; then
+    err "No action is specified" 2 1
+  fi
+  
+  local valid=0
+  for possible_action in $valid_actions; do
+    if [[ "${possible_action}" = $1 ]]; then
+      valid=1
+    fi
+  done
+  
+  if [[ "${valid}" -ne 1 ]]; then
+    err "$1 is not a valid action" 2 1
+  fi
+}
+
+########################################################################
+# Prints error and exits the script
+# Globals:
+#  None
+# Arguments:
+#  message
+#  return_code
+#  show_usage: 1 = True everything else is False
+# Returns:
+#   None
+########################################################################
+function err () {
+  if [[ -z $2 || $2 -eq 0 ]]; then
+    echo "ASSERT FAILED: Return code not given or equal to 0."
+    echo "$1"
+    exit 99
+  fi
+  
+  echo "Error: $1"
+  
+  if [[ "$3" -eq 1 ]]; then
+    echo ''
+    usage
+  fi
+  exit $2
+}
+
+########################################################################
+# Parses a config file
+# Globals:
+#   VERBOSE
+# Arguments:
+#   config_file
+# Returns:
+#   config: a hash of config values
+########################################################################
+function parse_config () {
+  
+  ########################################################################
+  # Prints an extracted value from the config file
+  # Globals:
+  #   CONFIG
+  # Arguments:
+  #   config_file
+  #   key
+  # Returns:
+  #   None
+  ########################################################################
+  function extract_config_value () {
+    local value
+    value=$(/usr/bin/grep "^$2" $1 | /usr/bin/cut -d= -f2)
+    if [[ "${PIPESTATUS[0]}" -ne 0 || "${PIPESTATUS[1]}" -ne 0 ]]; then
+      err "/usr/bin/grep or /usr/bin/cut was not found" 1
+    fi
+    echo "${value}"
+  }
+  
+  local config_file="$1"
+  
+  # Find the correct config: use $1 if available then $HOME then /etc
+  if [[ -z "${config_file}" ]]; then
+    if [[ -f "${HOME}/${CONFIG_HOME_FILE}" ]]; then
+      config_file="${HOME}/${CONFIG_HOME_FILE}"
+    elif [[ -f "${CONFIG_ETC_FILE}" ]]; then
+      config_file="${CONFIG_ETC_FILE}"
+    else
+      err "Could not find a config file. Please use the -c option" 4
+    fi
+  fi
+  
+  if [[ ! -f "${config_file}" ]]; then
+    err "${config_file} is not a file." 4
+  fi
+  
+  config_file=$(/usr/bin/readlink -f ${config_file}) || err "/usr/bin/readlink is not found" 1
+  
+  if [[ "${VERBOSE}" -eq 1 ]]; then
+    echo "Using config file ${config_file}"
+    echo
+  fi
+  
+  local is_valid=$(extract_config_value "${config_file}" 'CONFIG_VALID')
+  if [[ ! "${is_valid}" = 'YES' ]]; then
+    err "${config_file} is not marked as valid" 5
+  fi
+  
+  CONFIG+=( ["static"]=$(extract_config_value "${config_file}" 'PHYSICAL_DIRECTORY') )
+  CONFIG+=( ["vg"]=$(extract_config_value "${config_file}" 'VOLUME_GROUP') )
+  CONFIG+=( ["lv"]=$(extract_config_value "${config_file}" 'LOGICAL_VOLUME') )
+  CONFIG+=( ["grub"]=$(extract_config_value "${config_file}" 'GRUB_CONFIG') )
+}
+
+########################################################################
+# Executes the script
+# Globals:
+#   VERBOSE
+# Arguments:
+#   $@
+# Returns:
+#   None
+########################################################################
+function main () {
+  
+  local uid
+  uid=$(/usr/bin/id -u) || err "/usr/bin/id not found" 1
+  if [[ ${uid} -ne 0 ]]; then
+    err "You must be root." 3
+  fi
+  
+  local config_file=''
+  while getopts "vdc:" flag; do
+    case "${flag}" in
+      v) VERBOSE=1;;
+      d) DRY_RUN=1;;
+      c) config_file=$OPTARG;;
+    
+    esac
+  done
+  local action=${@:$OPTIND:1}
+  validate_action "${action}"
+  
+  parse_config "${config_file}"
+  
+  case "${action}" in
+    create) create;;
+    drop) drop;;
+    restore) restore;;
+  esac
+}
+
+main "$@"
