@@ -1,6 +1,6 @@
 Summary:            A wrapper for managing LVM snapshots
 Name:               lvsnap
-Version:            0.9.1
+Version:            0.9.2
 Release:            1%{?dist}
 License:            GPLv2+
 Source:             %{name}-%{version}.tar.gz
@@ -24,7 +24,7 @@ The snappy program creates snapshots of partitions.
 It can snapshot devices using LVM and rsync.
 
 %prep
-%autosetup -n %{name}
+%autosetup
 
 %build
 gzip lvsnap.1
