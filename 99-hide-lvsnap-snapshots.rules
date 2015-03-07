@@ -1,0 +1,1 @@
+ENV{DM_LV_NAME}=="bup-*", ENV{UDISKS_IGNORE}="1"

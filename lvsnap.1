@@ -1,18 +1,18 @@
-.TH SNAPPY 1
+.TH lvsnap 1
 .SH NAME
-snappy \- a wrapper for managing LVM snapshots
+lvsnap \- a wrapper for managing LVM snapshots
 .SH SYNOPSIS
-.B snappy
+.B lvsnap
 [\fB\-v\fR]
 [\fB\-d\fR]
 [\fB\-c\fR \fICONFIG\fR]
 .IR ACTION
 .SH DESCRIPTION
-.B snappy
+.B lvsnap
 creates snapshots of partitions. It can snapshot devices using LVM. For
 non-LVM devices it will use rsync to create a backup.
 
-.B snappy
+.B lvsnap
 requires an
 .B ACTION
 as a positional argument. This can be one of the following:
@@ -32,10 +32,10 @@ restores the current snapshot
 .PP
 
 The logical volumes which are to be snapshotted are listed in a 
-configuration file. This file can be given by an option to snappy. If not it looks for a file named
-.B .snappy.conf
+configuration file. This file can be given by an option to lvsnap. If not it looks for a file named
+.B .lvsnap.conf
 in the user's home. If not found it will fallback to the file
-.B /etc/snappy.conf
+.B /etc/lvsnap.conf
 as a last resort.
 
 This configuration file should contain the following keys:

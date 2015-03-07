@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# This is the main snappy script.
+# This is the main lvsnap script.
 # It is a wrapper for creating LVM snapshots
 
-readonly CONFIG_ETC_FILE='/etc/snappy.conf'
-readonly CONFIG_HOME_FILE='.snappy.conf'
+readonly CONFIG_ETC_FILE='/etc/lvsnap.conf'
+readonly CONFIG_HOME_FILE='.lvsnap.conf'
 VERBOSE=0
 DRY_RUN=0
 declare -A CONFIG
@@ -241,7 +241,7 @@ function restore () {
 #   None
 ########################################################################
 function usage () {
-    echo "snappy [OPTIONS] ACTION"
+    echo "lvsnap [OPTIONS] ACTION"
     echo "ACTION must be 'create', 'drop' or 'restore'"
     echo "OPTIONS"
     echo "-v        Enable verbose output"
