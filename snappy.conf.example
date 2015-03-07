@@ -2,7 +2,7 @@
 
 # This item makes sure you've manually inspected/adjusted the config file
 # Please change this to CONFIG_VALID=YES
-CONFIG_VALID=YES
+CONFIG_VALID=NO
 
 # Multiple values are allowed for PHYSICAL_DIRECTORY and LOGICAL_VOLUME
 # These are the mountpoints of non-LVM partitions

@@ -1,0 +1,89 @@
+.TH SNAPPY 1
+.SH NAME
+snappy \- a wrapper for managing LVM snapshots
+.SH SYNOPSIS
+.B snappy
+[\fB\-v\fR]
+[\fB\-d\fR]
+[\fB\-c\fR \fICONFIG\fR]
+.IR ACTION
+.SH DESCRIPTION
+.B snappy
+creates snapshots of partitions. It can snapshot devices using LVM. For
+non-LVM devices it will use rsync to create a backup.
+
+.B snappy
+requires an
+.B ACTION
+as a positional argument. This can be one of the following:
+
+.TP
+.B create
+creates a new snapshot
+
+.TP
+.B drop
+drops the current snapshot
+
+.TP
+.B restore
+restores the current snapshot
+
+.PP
+
+The logical volumes which are to be snapshotted are listed in a 
+configuration file. This file can be given by an option to snappy. If not it looks for a file named
+.B .snappy.conf
+in the user's home. If not found it will fallback to the file
+.B /etc/snappy.conf
+as a last resort.
+
+This configuration file should contain the following keys:
+.TP
+.B CONFIG_VALID=
+.BR
+should always be set to
+.B YES
+any other value throws an error.
+
+.TP
+.B PHYSICAL_DIRECTORY=
+.BR
+This key should have all the filesystems which you want to have
+snapshotted, but are not on an LVM-volume.
+.B /boot
+is a typical example. More volumes can be given seperated by a space.
+For example:
+.B /boot /var /home
+
+.TP
+.B LOGICAL_VOLUME=
+.BR
+This key lists all LVM-devices which are to be snapshotted, seperated by
+a space. You append the size of the snapshot after name and a :. For example:
+.B root:5G
+will snapshot the logical volume named root and create a snapshot with a size of 5 gigabytes.
+
+.TP
+.B VOLUME_GROUP=
+.BR
+Specifies the volume group to use for the logical volumes and the snapshots.
+
+.TP
+.B GRUB_CONFIG=
+.BR
+Sets the location of the GRUB2 config file. For example:
+.B /boot/grub2/grub.cfg
+
+.SH OPTIONS
+.TP
+.BR \-v
+Set verbosity on. Shows the commands which are run, among other usefull information.
+
+.TP
+.BR \-d
+Dry-run. Do not execute the commands
+
+.TP
+.BR \-c " " \fICONFIG\fR
+Set the config file to use.
