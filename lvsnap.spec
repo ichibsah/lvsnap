@@ -1,6 +1,6 @@
 Summary:            A wrapper for managing LVM snapshots
 Name:               lvsnap
-Version:            0.9.2
+Version:            0.9.3
 Release:            1%{?dist}
 License:            GPLv2+
 Source:             %{name}-%{version}.tar.gz
