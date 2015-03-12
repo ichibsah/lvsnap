@@ -2,12 +2,15 @@
 A LVM snapshot helper script written in Bash.
 
 * Rollback system upgrades
+* Test alpha versions and revert to your stable system
 * Completely remove a manually installed package
-* No more manual errors restoring and creating
 
 You need to have some free diskspace in your volume group or use thin provisioning.
 
 Don't forget to edit **/etc/lvsnap.conf**.
+
+
+**Only tested on Fedora!**
 
 ## Usage
 Creating a snapshot of your system is as simple as:

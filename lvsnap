@@ -5,22 +5,24 @@
 
 readonly CONFIG_ETC_FILE='/etc/lvsnap.conf'
 readonly CONFIG_HOME_FILE='.lvsnap.conf'
+readonly GRUB_CONFIG_FILES='/etc/grub2.cfg /etc/grub2-efi.cfg'
 VERBOSE=0
 DRY_RUN=0
-declare -A CONFIG
-
+EXCLUDE=""
 
 ########################################################################
-# Executes a function
+# Prints what you're about to exec if verbose
 # Globals:
 #  VERBOSE
-#  DRY_RUN
 # Arguments:
 #  command: the command you wish to run
 # Returns:
 #   None
 ########################################################################
 function print_exec () {
+  # Tried to execute here as well and failed, seems I am not the only one:
+  # http://mywiki.wooledge.org/BashFAQ/050
+
   if [[ "${VERBOSE}" -eq 1 ]]; then
     echo $1
   fi
@@ -56,12 +58,18 @@ function create () {
     fi
     echo $value
   }
-  
+
+  if [[ $VERBOSE -eq 1 ]]; then
+    echo "Snapshotting:"
+    list_devices '' "$EXCLUDE" '1,2'
+    echo
+  fi
+
   # Get the size of the physical backup partition
   
   local static_part_size=0
   
-  for dir in ${CONFIG["static"]}; do
+  for dir in $(list_devices 'physical' "$EXCLUDE" '2'); do
     local dir_size=$(get_size ${dir})
     if [[ "${VERBOSE}" -eq 1 ]]; then
       echo "Size of ${dir}: ${dir_size}kb"
@@ -78,43 +86,40 @@ function create () {
   
   # Create the LV snapshots
   
-  for lv in ${CONFIG["lv"]}; do
+  for lv in $(list_devices 'logical' "$EXCLUDE" '1'); do
     local size
     local name
-    size=$(echo "${lv}" | cut -d: -f2)
-    if [[ "${PIPESTATUS[0]}" -ne 0 || "${PIPESTATUS[1]}" -ne 0 ]]; then
-      err "/usr/bin/cut was not found" 1
-    fi
-    name=$(echo "${lv}" | cut -d: -f1)
-    if [[ "${PIPESTATUS[0]}" -ne 0 || "${PIPESTATUS[1]}" -ne 0 ]]; then
-      err "/usr/bin/cut was not found" 1
-    fi
+    size=$(get_lv_property "$lv" "lv_size") || err "/usr/sbin/lvs could not return size of $lv" 1
+    name=$(get_lv_property "$lv" "lv_name") || err "/usr/sbin/lvs could not return name of $lv" 1
     
-    print_exec "/usr/sbin/lvcreate -L${size} -s -n bup-${name} /dev/${CONFIG["vg"]}/${name}"
+    print_exec "/usr/sbin/lvcreate -L${size} -s -n bup-${name} ${lv}"
     if [[ "${DRY_RUN}" -eq 0 ]]; then
-      /usr/sbin/lvcreate -L"${size}" -s -n "bup-${name}" /dev/"${CONFIG["vg"]}"/"${name}"  >> /dev/null 2>&1 || err "/usr/sbin/lvcreate -L${size} -s -n bup-${name} /dev/${CONFIG["vg"]}/${name} has a non-zero exit." 10
+      /usr/sbin/lvcreate -L"${size}" -s -n "bup-${name}" "${lv}"  >> /dev/null 2>&1 || err "/usr/sbin/lvcreate -L${size} -s -n bup-${name} ${lv} has a non-zero exit." 10
     fi
     
   done
   
   # Backup the physical partitions using rsync
   
-  print_exec "/usr/bin/yes | /usr/sbin/lvcreate -Zy -L${static_part_size}k -n bup-physical ${CONFIG["vg"]}"
+  local vg
+  vg=$(get_vg_name) || err "/usr/sbin/lvs could not return the name of the volume group" 1
+
+  print_exec "/usr/bin/yes | /usr/sbin/lvcreate -Zy -L${static_part_size}k -n bup-physical ${vg}"
   if [[ "${DRY_RUN}" -eq 0 ]]; then
-    /usr/bin/yes | /usr/sbin/lvcreate -Zy -L"${static_part_size}"k -n bup-physical "${CONFIG["vg"]}" >> /dev/null 2>&1 || err "/usr/bin/yes | /usr/sbin/lvcreate -Zy -L${static_part_size}k -n bup-physical ${CONFIG["vg"]} has a non-zero exit." 10
+    /usr/bin/yes | /usr/sbin/lvcreate -Zy -L"${static_part_size}"k -n bup-physical "${vg}" >> /dev/null 2>&1 || err "/usr/bin/yes | /usr/sbin/lvcreate -Zy -L${static_part_size}k -n bup-physical ${vg} has a non-zero exit." 10
   fi
   
-  print_exec "/usr/sbin/mkfs.ext4 /dev/${CONFIG["vg"]}/bup-physical"
+  print_exec "/usr/sbin/mkfs.ext4 /dev/${vg}/bup-physical"
   if [[ "${DRY_RUN}" -eq 0 ]]; then
-    /usr/sbin/mkfs.ext4 /dev/"${CONFIG["vg"]}"/bup-physical >> /dev/null 2>&1 || err "/usr/sbin/mkfs.ext4 /dev/${CONFIG["vg"]}/bup-physical has a non-zero exit." 10
+    /usr/sbin/mkfs.ext4 /dev/"${vg}"/bup-physical >> /dev/null 2>&1 || err "/usr/sbin/mkfs.ext4 /dev/${vg}/bup-physical has a non-zero exit." 10
   fi
   
-  print_exec "/usr/bin/mount /dev/${CONFIG["vg"]}/bup-physical /mnt"
+  print_exec "/usr/bin/mount /dev/${vg}/bup-physical /mnt"
   if [[ "${DRY_RUN}" -eq 0 ]]; then
-    /usr/bin/mount /dev/"${CONFIG["vg"]}"/bup-physical /mnt  >> /dev/null 2>&1  || err "/usr/bin/mount /dev/${CONFIG["vg"]}/bup-physical /mnt has a non-zero exit." 10
+    /usr/bin/mount /dev/"${vg}"/bup-physical /mnt  >> /dev/null 2>&1  || err "/usr/bin/mount /dev/${vg}/bup-physical /mnt has a non-zero exit." 10
   fi
   
-  for dir in ${CONFIG["static"]}; do
+  for dir in $(list_devices 'physical' "$EXCLUDE" '2'); do
     local drname
     drname=$(/usr/bin/basename ${dir}) || err '/usr/bin/basename not found' 1
     
@@ -146,24 +151,19 @@ function create () {
 #   None
 ########################################################################
 function drop () {
-  for lv in ${CONFIG["lv"]}; do
-    local name
-    name=$(echo "${lv}" | cut -d: -f1)
-    if [[ "${PIPESTATUS[0]}" -ne 0 || "${PIPESTATUS[1]}" -ne 0 ]]; then
-      err "/usr/bin/cut was not found" 1
-    fi
-    
-    print_exec "/usr/bin/yes | /usr/sbin/lvremove ${CONFIG["vg"]}/bup-${name}"
-    if [[ "${DRY_RUN}" -eq 0 ]]; then
-      /usr/bin/yes | /usr/sbin/lvremove "${CONFIG["vg"]}"/"bup-${name}" >> /dev/null 2>&1 || err "/usr/bin/yes | /usr/sbin/lvremove ${CONFIG["vg"]}/bup-${name} has a non-zero exit." 10
-    fi
-    
-  done
+  local lvs
+  lvs=$(lvs --noheadings -o lv_name | grep bup-)
+ 
+  local vg
+  vg=$(get_vg_name) || err "/usr/sbin/lvs could not return the name of the volume group" 1
+
   
-  print_exec "/usr/bin/yes | /usr/sbin/lvremove ${CONFIG["vg"]}/bup-physical"
-  if [[ "${DRY_RUN}" -eq 0 ]]; then
-    /usr/bin/yes | /usr/sbin/lvremove "${CONFIG["vg"]}"/bup-physical >> /dev/null 2>&1  || err "/usr/bin/yes | /usr/sbin/lvremove ${CONFIG["vg"]}/bup-physical has a non-zero exit." 10
-  fi
+  for lv in $lvs; do
+    print_exec "/usr/bin/yes | /usr/sbin/lvremove ${vg}/${lv}"
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+      /usr/bin/yes | /usr/sbin/lvremove "${vg}"/"${lv}" >> /dev/null 2>&1 || err "/usr/bin/yes | /usr/sbin/lvremove ${vg}/${lv} has a non-zero exit." 10
+    fi
+  done
 }
 
 ########################################################################
@@ -176,18 +176,22 @@ function drop () {
 #   None
 ########################################################################
 function restore () {
-  print_exec "/usr/bin/mount /dev/${CONFIG["vg"]}/bup-physical /mnt"
+
+  local vg
+  vg=$(get_vg_name) || err "/usr/sbin/lvs could not return the name of the volume group" 1
+
+  print_exec "/usr/bin/mount /dev/${vg}/bup-physical /mnt"
   if [[ "${DRY_RUN}" -eq 0 ]]; then
-    /usr/bin/mount /dev/"${CONFIG["vg"]}"/bup-physical /mnt >> /dev/null 2>&1  || err "/usr/bin/mount /dev/${CONFIG["vg"]}/bup-physical /mnt has a non-zero exit." 10
+    /usr/bin/mount /dev/"${vg}"/bup-physical /mnt >> /dev/null 2>&1  || err "/usr/bin/mount /dev/${vg}/bup-physical /mnt has a non-zero exit." 10
   fi
   
-  for dir in ${CONFIG["static"]}; do
+  for dir in $(list_devices 'physical' "$EXCLUDE" '2'); do
     local drname
     drname=$(/usr/bin/basename ${dir}) || err '/usr/bin/basename not found' 1
     
-    print_exec "/usr/bin/rsync -aHAX /mnt/${drname}/ ${dir}/"
+    print_exec "/usr/bin/rsync --delete -aHAX /mnt/${drname}/ ${dir}/"
     if [[ "${DRY_RUN}" -eq 0 ]]; then
-      /usr/bin/rsync -aHAX /mnt/"${drname}"/ "${dir}"/ >> /dev/null 2>&1  || err "/usr/bin/rsync -aHAX /mnt/${drname}/ ${dir}/ has a non-zero exit." 10
+      /usr/bin/rsync --delete -aHAX /mnt/"${drname}"/ "${dir}"/ >> /dev/null 2>&1  || err "/usr/bin/rsync --delete -aHAX /mnt/${drname}/ ${dir}/ has a non-zero exit." 10
     fi
     
   done
@@ -196,33 +200,33 @@ function restore () {
   if [[ "${DRY_RUN}" -eq 0 ]]; then
     /usr/bin/umount /mnt >> /dev/null 2>&1  || err "/usr/bin/umount /mnt has a non-zero exit." 10
   fi
-  
-  for lv in ${CONFIG["lv"]}; do
-    local name
-    name=$(echo "${lv}" | cut -d: -f1)
-    if [[ "${PIPESTATUS[0]}" -ne 0 || "${PIPESTATUS[1]}" -ne 0 ]]; then
-      err "/usr/bin/cut was not found" 1
-    fi
-    
-    print_exec "/usr/sbin/lvconvert --merge /dev/${CONFIG["vg"]}/bup-${name}"
+
+  local lvs
+  lvs=$(lvs --noheadings -o lv_name | grep bup- | grep -v bup-physical)
+
+  for lv in ${lvs}; do
+    print_exec "/usr/sbin/lvconvert --merge ${vg}/${lv}"
     if [[ "${DRY_RUN}" -eq 0 ]]; then
-      /usr/sbin/lvconvert --merge /dev/"${CONFIG["vg"]}"/"bup-${name}" >> /dev/null 2>&1  || err "/usr/sbin/lvconvert --merge /dev/${CONFIG["vg"]}/bup-${name} has a non-zero exit." 10
+      /usr/sbin/lvconvert --merge "${vg}/${lv}" >> /dev/null 2>&1  || err "/usr/sbin/lvconvert --merge ${vg}/${lv} has a non-zero exit." 10
     fi
     
   done
   
-  if [[ -n "${CONFIG["grub"]}" ]]; then
-    print_exec "/usr/sbin/grub2-mkconfig -o ${CONFIG["grub"]}"
-    if [[ "${DRY_RUN}" -eq 0 ]]; then
-       /usr/sbin/grub2-mkconfig -o "${CONFIG["grub"]}" >> /dev/null 2>&1  || err "/usr/sbin/grub2-mkconfig -o ${CONFIG["grub"]} has a non-zero exit." 10
+  for loc in $GRUB_CONFIG_FILES; do
+    local fil
+    fil=$(readlink -f $loc) || err "Could not execute /usr/bin/readlink" 1
+    
+    if [[ -f "$fil" ]]; then
+      print_exec "/usr/sbin/grub2-mkconfig -o ${fil}"
+      if [[ "${DRY_RUN}" -eq 0 ]]; then
+         /usr/sbin/grub2-mkconfig -o "${fil}" >> /dev/null 2>&1  || err "/usr/sbin/grub2-mkconfig -o ${fil} has a non-zero exit." 10
+      fi
     fi
-  elif [[ "${VERBOSE}" -eq 1 ]]; then
-    echo "Skip recreating GRUB config"
-  fi
+  done
   
-  print_exec "/usr/bin/yes | /usr/sbin/lvremove ${CONFIG["vg"]}/bup-physical"
+  print_exec "/usr/bin/yes | /usr/sbin/lvremove ${vg}/bup-physical"
   if [[ "${DRY_RUN}" -eq 0 ]]; then
-    /usr/bin/yes | /usr/sbin/lvremove "${CONFIG["vg"]}"/bup-physical >> /dev/null 2>&1  || err "/usr/bin/yes | /usr/sbin/lvremove ${CONFIG["vg"]}/bup-physical has a non-zero exit." 10
+    /usr/bin/yes | /usr/sbin/lvremove "${vg}"/bup-physical >> /dev/null 2>&1  || err "/usr/bin/yes | /usr/sbin/lvremove ${vg}/bup-physical has a non-zero exit." 10
   fi
   
   if [[ "${VERBOSE}" -eq 1 ]]; then
@@ -244,9 +248,11 @@ function usage () {
     echo "lvsnap [OPTIONS] ACTION"
     echo "ACTION must be 'create', 'drop' or 'restore'"
     echo "OPTIONS"
-    echo "-v        Enable verbose output"
-    echo "-c FILE   Use config file at location FILE"
-    echo "-d        Dry-run, don't do anything"
+    echo "-v         Enable verbose output"
+    echo "-d         Dry-run, don't do anything"
+    echo "-h         Include /home"
+    echo "-e         Include /boot/efi"
+    echo "-x PATTERN Exclude device or mountpoints with PATTERN"
 }
 
 ########################################################################
@@ -367,13 +373,86 @@ function parse_config () {
   CONFIG+=( ["static"]=$(extract_config_value "${config_file}" 'PHYSICAL_DIRECTORY') )
   CONFIG+=( ["vg"]=$(extract_config_value "${config_file}" 'VOLUME_GROUP') )
   CONFIG+=( ["lv"]=$(extract_config_value "${config_file}" 'LOGICAL_VOLUME') )
-  CONFIG+=( ["grub"]=$(extract_config_value "${config_file}" 'GRUB_CONFIG') )
+}
+
+########################################################################
+# Prints a list of all devices and it's mountpoint which can be backed up
+# Globals:
+#   VERBOSE
+# Arguments:
+#   type     nothing, 'physical' or 'logical'    
+#   exclude  patterns which should be excluded, seperated by a space
+#   tp       1: devices, 2: mount points 1,2: devices and mountpounts
+# Returns:
+#   None
+########################################################################
+function list_devices () {
+
+  local devices
+  devices=$(/usr/bin/cat /proc/mounts | /usr/bin/grep '^/' | /usr/bin/grep -v ' /run/media' | /usr/bin/cut -d" " -f1,2)
+  if [[ "${PIPESTATUS[0]}" -ne 0 || "${PIPESTATUS[1]}" -ne 0  || "${PIPESTATUS[2]}" -ne 0 || "${PIPESTATUS[3]}" -ne 0 ]]; then
+    err "/usr/bin/cat, /usr/bin/cut or /usr/bin/grep was not found" 1
+  fi
+  while read -r line; do
+    # NOTE: This could also be an || but this is more readable
+    if [[ $1 = 'physical' && $line = /dev/mapper/* ]]; then
+      continue
+    elif [[ $1 = 'logical' && ! $line = /dev/mapper/* ]]; then
+      continue
+    fi
+    
+    for pattern in $2; do
+      local dummy=$(echo $line | /usr/bin/grep $pattern)
+      if [[ -n "$dummy"  ]]; then
+        continue 2
+      fi
+    done
+    
+    echo $line | /usr/bin/cut -d' ' -f$3
+  done <<< "$devices"
+}
+
+########################################################################
+# Prints the name/size/... of an lv
+# Globals:
+#   None
+# Arguments:
+#   lv_name
+#   property 
+# Returns:
+#   None
+########################################################################
+function get_lv_property () {
+  local prop=$(/usr/sbin/lvs --noheadings -o $2 $1 )
+  if [[ -z "$prop" ]]; then
+    err "/usr/sbin/lvs could not return $2 of $1" 1
+  fi
+  echo $prop
+}
+
+########################################################################
+# Prints the name of the volume group
+# Globals:
+#   None
+# Arguments:
+#   None
+# Returns:
+#   None
+########################################################################
+function get_vg_name () {
+  local prop=$(/usr/sbin/lvs --noheadings -o vg_name | head -n1 )
+  if [[ -z "$prop" ]]; then
+    err "/usr/sbin/lvs could not return name of the volume group" 1
+  fi
+  echo $prop
 }
 
 ########################################################################
 # Executes the script
 # Globals:
 #   VERBOSE
+#   EXCLUDE
+#   DRY_RUN
 # Arguments:
 #   $@
 # Returns:
@@ -387,20 +466,28 @@ function main () {
     err "You must be root." 3
   fi
   
-  local config_file=''
-  while getopts "vdc:" flag; do
+  local include_home=0
+  local include_efi=0
+  while getopts "vdhx:" flag; do
     case "${flag}" in
       v) VERBOSE=1;;
       d) DRY_RUN=1;;
-      c) config_file=$OPTARG;;
-    
+      h) include_home=1;;
+      e) include_efi=1;;
+      x) EXCLUDE+=" $OPTARG";;
     esac
   done
+  
+  if [[ $include_home -eq 0 ]]; then
+    EXCLUDE+=" /home"
+  fi
+  if [[ $include_efi -eq 0 ]]; then
+    EXCLUDE+=" /boot/efi"
+  fi
+  
   local action=${@:$OPTIND:1}
   validate_action "${action}"
-  
-  parse_config "${config_file}"
-  
+
   case "${action}" in
     create) create;;
     drop) drop;;

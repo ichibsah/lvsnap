@@ -17,7 +17,7 @@ Requires:			lvm2
 Requires:			rsync
 Requires:			util-linux
 Requires:			e2fsprogs
-Requires:			bash >= 4.0
+Requires:			bash
 
 %description
 The snappy program creates snapshots of partitions.
@@ -31,14 +31,11 @@ gzip lvsnap.1
 
 %install
 install -m 755 -d %{buildroot}/%{_bindir}
-install -m 755 -d %{buildroot}/etc
 install -m 755 -d %{buildroot}/etc/udev/rules.d
 install -m 755 -d %{buildroot}/%{_mandir}/man1
 
 install -m 555 -t %{buildroot}/%{_bindir} lvsnap
-cp lvsnap.conf.example %{buildroot}/etc/lvsnap.conf
 install -m 644 -t %{buildroot}/etc/udev/rules.d/ 99-hide-lvsnap-snapshots.rules 
-chmod 644 %{buildroot}/etc/lvsnap.conf
 
 cp lvsnap.1.gz %{buildroot}/%{_mandir}/man1/
 
@@ -51,7 +48,6 @@ cp lvsnap.1.gz %{buildroot}/%{_mandir}/man1/
 %files
 %{_bindir}/lvsnap
 %{_mandir}/man1/lvsnap.1.gz
-/etc/lvsnap.conf
 /etc/udev/rules.d/99-hide-lvsnap-snapshots.rules
 
 %changelog
