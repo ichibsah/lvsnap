@@ -33,7 +33,6 @@ As a root user:
     # chmod 755 /usr/local/bin/lvsnap
     # gzip lvsnap/lvsnap.1
     # cp lvsnap/lvsnap.1.gz /usr/local/share/man/man1/
-    # cp lvsnap/lvsnap.conf.example /etc/lvsnap.conf
     # cp lvsnap/99-hide-lvsnap-snapshots.rules /etc/udev/rules.d/99-hide-lvsnap-snapshots.rules
     
 or you could use the included spec-file to build an RPM.
