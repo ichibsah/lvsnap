@@ -7,9 +7,6 @@ A LVM snapshot helper script written in Bash.
 
 You need to have some free diskspace in your volume group or use thin provisioning.
 
-Don't forget to edit **/etc/lvsnap.conf**.
-
-
 **Only tested on Fedora!**
 
 ## Usage
